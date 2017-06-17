@@ -1,0 +1,185 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+
+(defstruct (vec (:conc-name v-)
+                (:constructor)
+                (:constructor vec3 (x y z)))
+  (x 0.0 :type single-float)
+  (y 0.0 :type single-float)
+  (z 0.0 :type single-float))
+
+(declaim (inline vdot vadd vsub vcross vscale vnormalize!)
+         (ftype (function (vec vec) single-float) vdot)
+         (ftype (function (vec vec) vec) vadd)
+         (ftype (function (vec vec) vec) vsub)
+         (ftype (function (vec vec) vec) vcross)
+         (ftype (function (vec single-float) vec) vscale)
+         (ftype (function (vec) vec) vnormalize!))
+
+(defun vdot (a b)
+  (+ (* (v-x a) (v-x b))
+     (* (v-y a) (v-y b))
+     (* (v-z a) (v-z b))))
+
+(defun vadd (a b)
+  (vec3 (+ (v-x a) (v-x b))
+        (+ (v-y a) (v-y b))
+        (+ (v-z a) (v-z b))))
+
+(defun vsub (a b)
+  (vec3 (- (v-x a) (v-x b))
+        (- (v-y a) (v-y b))
+        (- (v-z a) (v-z b))))
+
+(defun vcross (a b)
+  (vec3 (- (* (v-y a) (v-z b))
+           (* (v-z a) (v-y b)))
+        (- (* (v-z a) (v-x b))
+           (* (v-x a) (v-z b)))
+        (- (* (v-x a) (v-y b))
+           (* (v-y a) (v-x b)))))
+
+(defun vscale (a k)
+  (vec3 (* (v-x a) k)
+        (* (v-y a) k)
+        (* (v-z a) k)))
+
+(defun vnormalize! (a)
+  (let ((len (sqrt (vdot a a))))
+    (declare (type single-float len))
+    (when (> len 1.0e-17)
+      (setf (v-x a) (/ (v-x a) len)
+            (v-y a) (/ (v-y a) len)
+            (v-z a) (/ (v-z a) len)))
+    a))
+
+(defstruct (isect (:constructor)
+                  (:constructor isect (dist pos n hit?)))
+  (dist 0 :type single-float)
+  (pos (make-vec) :type vec)
+  (n (make-vec) :type vec)
+  (hit? nil :type boolean))
+
+(defstruct (sphere)
+  (pos (vec3) :type vec)
+  (r 0 :type single-float))
+
+(defstruct (plane)
+  (pos (make-vec) :type vec)
+  (n (make-vec) :type vec))
+
+(defstruct (ray)
+  (org (make-vec) :type vec)
+  (dir (make-vec) :type vec))
+
+(declaim
+ (ftype (function (ray single-float) vec) pos-on-ray))
+
+(defun pos-on-ray (ray dist)
+  (vec3 (+ (v-x (ray-org ray)) (* (v-x (ray-dir ray)) dist))
+        (+ (v-y (ray-org ray)) (* (v-y (ray-dir ray)) dist))
+        (+ (v-z (ray-org ray)) (* (v-z (ray-dir ray)) dist))))
+
+(declaim
+ (ftype (function (isect ray sphere) isect) ray-sphere-intersect)
+ (ftype (function (isect ray plane) isect) ray-plane-intersect))
+
+(defun ray-sphere-intersect (intersect ray sphere)
+  (let* ((rs (vsub (ray-org ray) (sphere-pos sphere)))
+         (b (vdot rs (ray-dir ray)))
+         (c (- (vdot rs rs) (* (sphere-r sphere) (sphere-r sphere))))
+         (d (- (* b b) c))
+         (dist 0.0))
+    (declare (type vec rs)
+             (type single-float b c d dist))
+    (when (> d 0.0)
+      (setf dist (- (- b) (sqrt d)))
+      (when (< 0.0 dist (isect-dist intersect))
+        (setf (isect-dist intersect) dist
+              (isect-hit? intersect) t
+              (isect-pos intersect) (pos-on-ray ray dist)
+              (isect-n intersect) (vnormalize!
+                                   (vsub (isect-pos intersect)
+                                         (sphere-pos sphere))))))
+    intersect))
+
+(defun ray-plane-intersect (intersect ray plane)
+  (let* ((d (- (vdot (plane-pos plane) (plane-n plane))))
+         (v (vdot (ray-dir ray) (plane-n plane)))
+         (dist 0.0))
+    (declare (type single-float d v dist))
+    (when (> (abs v) 1.0e-17)
+      (setf dist (/ (- (+ d (vdot (ray-org ray) (plane-n plane))))
+                    v))
+      (when (< 0.0 dist (isect-dist intersect))
+        (setf (isect-dist intersect) dist
+              (isect-hit? intersect) t
+              (isect-pos intersect) (pos-on-ray ray dist)
+              (isect-n intersect) (plane-n plane))))
+    intersect))
+
+(declaim (ftype (function (vec) (values vec vec vec)) ortho-basis))
+(defun ortho-basis (n)
+  (let* ((tmp (cond ((< -0.6 (v-x n) 0.6) (vec3 1.0 0.0 0.0))
+                    ((< -0.6 (v-y n) 0.6) (vec3 0.0 1.0 0.0))
+                    ((< -0.6 (v-z n) 0.6) (vec3 0.0 0.0 1.0))
+                    (t (vec3 1.0 0.0 0.0))))
+         (b0 (vnormalize! (vcross tmp n))))
+    (values b0 (vnormalize! (vcross n b0)) n)))
+
+(declaim (ftype (function (number) (unsigned-byte 8)) clamp))
+(defun clamp (f)
+  (let ((i (* f 255.5)))
+    (cond ((< i 0) 0)
+          ((> i 255) 255)
+          (t (round i)))))
+
+(defparameter *sphere0* (make-sphere :pos (vec3 -2.0 0.0 -3.5) :r 0.5))
+(defparameter *sphere1* (make-sphere :pos (vec3 -0.5 0.0 -3.0) :r 0.5))
+(defparameter *sphere2* (make-sphere :pos (vec3 1.0 0.0 -2.2) :r 0.5))
+(defparameter *plane* (make-plane :pos (vec3 0.0 -0.5 0.0)
+                                  :n (vec3 0.0 1.0 0.0)))
+
+(defun render (w h subsamples)
+  (let ((image (make-array (list w h 3)
+                           :element-type '(unsigned-byte 8))))
+    (dotimes (y h)
+      (dotimes (x w)
+        (dotimes (v subsamples)
+          (dotimes (u subsamples)
+            (let* ((hw (/ w 2.0))
+                   (hh (/ h 2.0))
+                   (px (/ (+ x (/ u subsamples) (- hw))
+                          hw))
+                   (py (/ (+ y (/ v subsamples) (- hh))
+                          hh))
+                   (ray (make-ray :org (vec3 0.0 0.0 0.0)
+                                  :dir (vnormalize! (vec3 px py -1.0))))
+                   (isect (make-isect :dist 1.0e+17 :hit? nil)))
+              (ray-sphere-intersect isect ray *sphere0*)
+              (ray-sphere-intersect isect ray *sphere1*)
+              (ray-sphere-intersect isect ray *sphere2*)
+              (ray-plane-intersect isect ray *plane*)
+              (when (isect-hit? isect)
+                (incf (aref image x y 0))
+                (incf (aref image x y 1))
+                (incf (aref image x y 2))))))
+        (setf (aref image x y 0)
+              (clamp (/ (aref image x y 0)
+                        (* subsamples subsamples))))
+        (setf (aref image x y 1)
+              (clamp (/ (aref image x y 1)
+                        (* subsamples subsamples))))
+        (setf (aref image x y 2)
+              (clamp (/ (aref image x y 2)
+                        (* subsamples subsamples))))))
+    image))
+
+;; (render 10 10 1)
+(defun main (&rest argv)
+  (declare (ignorable argv)))
+
+
