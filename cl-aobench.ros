@@ -6,6 +6,12 @@ exec ros -Q -- $0 "$@"
 
 (declaim (optimize (speed 3) (debug 0) (safety 0)))
 
+(defpackage :ao-bench
+  (:use :cl)
+  (:export :render-and-save))
+
+(in-package :ao-bench)
+
 (defstruct (vec (:conc-name v-)
                 (:constructor)
                 (:constructor vec3 (x y z)))
@@ -235,8 +241,10 @@ exec ros -Q -- $0 "$@"
                          :if-exists :supersede :if-does-not-exist :create)
       (save-ppm out image width height))))
 
+(in-package :cl-user)
+
 (defun main (&rest argv)
   (declare (ignorable argv))
-  (time (render-and-save "out.ppm" 256 256)))
+  (time (ao-bench:render-and-save "out.ppm" 256 256)))
 
 
