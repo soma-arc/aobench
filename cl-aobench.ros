@@ -84,8 +84,8 @@ exec ros -Q -- $0 "$@"
   (dir (make-vec) :type vec))
 
 (declaim
+ (inline pos-on-ray)
  (ftype (function (ray single-float) vec) pos-on-ray))
-
 (defun pos-on-ray (ray dist)
   (vec3 (+ (v-x (ray-org ray)) (* (v-x (ray-dir ray)) dist))
         (+ (v-y (ray-org ray)) (* (v-y (ray-dir ray)) dist))
@@ -129,21 +129,26 @@ exec ros -Q -- $0 "$@"
               (isect-n intersect) (plane-n plane))))
     intersect))
 
+(defparameter +vx1+ (vec3 1.0 0.0 0.0))
+(defparameter +vy1+ (vec3 0.0 1.0 0.0))
+(defparameter +vz1+ (vec3 0.0 0.0 1.0))
 (declaim (ftype (function (vec) (values vec vec vec)) ortho-basis))
 (defun ortho-basis (n)
-  (let* ((tmp (cond ((< -0.6 (v-x n) 0.6) (vec3 1.0 0.0 0.0))
-                    ((< -0.6 (v-y n) 0.6) (vec3 0.0 1.0 0.0))
-                    ((< -0.6 (v-z n) 0.6) (vec3 0.0 0.0 1.0))
-                    (t (vec3 1.0 0.0 0.0))))
+  (let* ((tmp (cond ((< -0.6 (v-x n) 0.6) +vx1+)
+                    ((< -0.6 (v-y n) 0.6) +vy1+)
+                    ((< -0.6 (v-z n) 0.6) +vz1+)
+                    (t +vx1+)))
          (b0 (vnormalize! (vcross tmp n))))
     (values b0 (vnormalize! (vcross n b0)) n)))
 
-(declaim (ftype (function (number) number) clamp))
+(declaim
+ (inline clamp)
+ (ftype (function (single-float) single-float) clamp))
 (defun clamp (f)
   (let ((i (* f 255.5)))
-    (cond ((< i 0) 0)
-          ((> i 255) 255)
-          (t (round i)))))
+    (cond ((< i 0) 0.0f0)
+          ((> i 255) 255.0f0)
+          (t (nth-value 0 (ffloor (+ 0.5f0 i)))))))
 
 (defparameter *sphere0* (make-sphere :pos (vec3 -2.0 0.0 -3.5) :r 0.5))
 (defparameter *sphere1* (make-sphere :pos (vec3 -0.5 0.0 -3.0) :r 0.5))
@@ -153,18 +158,21 @@ exec ros -Q -- $0 "$@"
 
 (defparameter *ao-samples* 8)
 
+(declaim (ftype (function (isect) single-float) ambient-occlusion))
 (defun ambient-occlusion (isect)
   (multiple-value-bind (v0 v1 v2) (ortho-basis (isect-n isect))
     (let* ((ntheta *ao-samples*)
            (nphi *ao-samples*)
            (samples (* ntheta nphi))
            (epsilon 0.0001)
-           (occlusion 0)
+           (occlusion 0.0f0)
            (occ-isect (make-isect))
-           (p (vadd (isect-pos isect) (vscale (isect-n isect) epsilon)))
+           (p (vec3 (+ (v-x (isect-pos isect)) (* (v-x (isect-n isect)) epsilon))
+                    (+ (v-y (isect-pos isect)) (* (v-y (isect-n isect)) epsilon))
+                    (+ (v-z (isect-pos isect)) (* (v-z (isect-n isect)) epsilon))))
            (ray (make-ray :org p :dir (make-vec))))
       (declare (type integer ntheta nphi samples)
-               (type number occlusion))
+               (type single-float occlusion))
       (dotimes (j nphi)
         (dotimes (i ntheta)
           (let* ((theta (sqrt (random 1.0s0)))
@@ -188,21 +196,25 @@ exec ros -Q -- $0 "$@"
 
 (defun render (w h subsamples)
   (let ((image (make-array (* w h 3)
-                           :element-type 'number))
+                           :element-type 'float
+                           :initial-element 0.0f0))
         (hw (/ w 2.0))
-        (hh (/ h 2.0)))
+        (hh (/ h 2.0))
+        (ray (make-ray :org (vec3 0.0 0.0 0.0)))
+        (isect (make-isect :dist 1.0e+17 :hit? nil)))
     (dotimes (y h)
       (dotimes (x w)
         (let ((index (* 3 (+ (* y w) x))))
           (dotimes (v subsamples)
             (dotimes (u subsamples)
+              (declare (type fixnum u v))
               (let* ((px (/ (+ x (/ u subsamples) (- hw))
                             hw))
                      (py (/ (+ y (/ v subsamples) (- hh))
-                            hh))
-                     (ray (make-ray :org (vec3 0.0 0.0 0.0)
-                                    :dir (vnormalize! (vec3 px py -1.0))))
-                     (isect (make-isect :dist 1.0e+17 :hit? nil)))
+                            hh)))
+                (setf (ray-dir ray) (vnormalize! (vec3 px py -1.0))
+                      (isect-dist isect) 1.0e+17
+                      (isect-hit? isect) nil)
                 (ray-sphere-intersect isect ray *sphere0*)
                 (ray-sphere-intersect isect ray *sphere1*)
                 (ray-sphere-intersect isect ray *sphere2*)
@@ -224,7 +236,8 @@ exec ros -Q -- $0 "$@"
     image))
 
 (defun save-ppm (stream image width height)
-  (declare (type fixnum width height))
+  (declare (type fixnum width height)
+           (type (simple-vector) image))
   (format stream "P3~%~D ~D~%~D~%" width height 255)
   (dotimes (y height)
     (dotimes (x width)
@@ -236,7 +249,7 @@ exec ros -Q -- $0 "$@"
   t)
 
 (defun render-and-save (filename width height)
-  (let ((image (render width height 2)))
+  (let ((image (time (render width height 2))))
     (with-open-file (out filename :direction :output
                          :if-exists :supersede :if-does-not-exist :create)
       (save-ppm out image width height))))
@@ -245,6 +258,6 @@ exec ros -Q -- $0 "$@"
 
 (defun main (&rest argv)
   (declare (ignorable argv))
-  (time (ao-bench:render-and-save "out.ppm" 256 256)))
+  (ao-bench:render-and-save "out.ppm" 256 256))
 
 
